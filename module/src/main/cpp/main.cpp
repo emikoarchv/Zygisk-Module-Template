@@ -58,7 +58,7 @@ public:
         const char *process_name = env_peta->GetStringUTFChars(args->nice_name, nullptr);
         if (!process_name) return;
         
-        // Kode daftar hitam yang sudah diperbaiki total dari typo
+        // Memastikan tidak ada typo teks lagi pada bagian filter
         if (strstr(process_name, "com.android.systemui") || 
             strstr(process_name, "ksu.manager") || 
             strstr(process_name, "com.google.android") ||
