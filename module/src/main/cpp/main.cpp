@@ -5,7 +5,7 @@
 #include <GLES2/gl2.h>
 #include <vulkan/vulkan.h>
 #include <dlfcn.h>
-#include "zygisk.hpp"
+#include "zygisk.h"
 
 // =============================================================================
 // HOOKING OPENGL ES (Adreno 830)
@@ -60,7 +60,7 @@ void aktifkan_spoofing_driver() {
 // =============================================================================
 // ENGINES ZYGISK: PENYARINGAN APLIKASI
 // =============================================================================
-class MyModule : public zygisk::ModuleBase {
+class GPUSpooferModule : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
         this->api_peta = api;
@@ -73,14 +73,14 @@ public:
         if (!process_name) return;
 
         // DAFTAR HITAM: Hindari aplikasi sistem agar tidak crash
-        if (strstr(process_name, "com.android.systemui") || 
-            strstr(process_name, "com.google.android") || 
-            strstr(process_name, "ksu.manager") || 
+        if (strstr(process_name, "com.android.systemui") ||
+            strstr(process_name, "com.google.android") ||
+            strstr(process_name, "ksu.manager") ||
             strstr(process_name, "android.process")) {
-            
+
             api_peta->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             env_peta->ReleaseStringUTFChars(args->nice_name, process_name);
-            return; 
+            return;
         }
 
         aktifkan_spoofing_driver();
@@ -93,4 +93,4 @@ private:
     JNIEnv *env_peta;
 };
 
-REGISTER_ZYGISK_MODULE(MyModule)
+REGISTER_ZYGISK_MODULE(GPUSpooferModule)
