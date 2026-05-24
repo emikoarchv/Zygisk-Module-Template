@@ -1,79 +1,96 @@
-/* Copyright 2022-2023 John "topjohnwu" Wu
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
- * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
- * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
- * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
- * OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
- * PERFORMANCE OF THIS SOFTWARE.
- */
-
-#include <cstdlib>
+#include <jni.h>
+#include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <android/log.h>
-
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+#include <vulkan/vulkan.h>
+#include <dlfcn.h>
 #include "zygisk.hpp"
 
-using zygisk::Api;
-using zygisk::AppSpecializeArgs;
-using zygisk::ServerSpecializeArgs;
+// =============================================================================
+// HOOKING OPENGL ES (Adreno 830)
+// =============================================================================
+typedef const GLubyte* (*PFNGLGETSTRINGPROC)(GLenum name);
+PFNGLGETSTRINGPROC orig_glGetString = nullptr;
 
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "MyModule", __VA_ARGS__)
+const GLubyte* hooked_glGetString(GLenum name) {
+    if (name == GL_RENDERER) {
+        return (const GLubyte*)"Adreno (TM) 830";
+    }
+    if (name == GL_VENDOR) {
+        return (const GLubyte*)"Qualcomm";
+    }
+    if (orig_glGetString) {
+        return orig_glGetString(name);
+    }
+    return (const GLubyte*)"";
+}
 
+// =============================================================================
+// HOOKING VULKAN API (Adreno 830)
+// =============================================================================
+typedef void (*PFN_vkGetPhysicalDeviceProperties)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties);
+PFN_vkGetPhysicalDeviceProperties orig_vkGetPhysicalDeviceProperties = nullptr;
+
+void hooked_vkGetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties) {
+    if (orig_vkGetPhysicalDeviceProperties) {
+        orig_vkGetPhysicalDeviceProperties(physicalDevice, pProperties);
+    }
+    pProperties->vendorID = 0x5143;
+    pProperties->deviceID = 0x41383330;
+    strcpy(pProperties->deviceName, "Adreno (TM) 830");
+    pProperties->driverVersion = VK_MAKE_VERSION(512, 800, 0);
+}
+
+// =============================================================================
+// FUNGSI UTAMA UNTUK MENGAKTIFKAN JALUR PENIPUAN DI MEMORI GAME
+// =============================================================================
+void aktifkan_spoofing_driver() {
+    void* gles_handle = dlopen("libGLESv2.so", RTLD_LAZY);
+    if (gles_handle) {
+        orig_glGetString = (PFNGLGETSTRINGPROC)dlsym(gles_handle, "glGetString");
+    }
+
+    void* vulkan_handle = dlopen("libvulkan.so", RTLD_LAZY);
+    if (vulkan_handle) {
+        orig_vkGetPhysicalDeviceProperties = (PFN_vkGetPhysicalDeviceProperties)dlsym(vulkan_handle, "vkGetPhysicalDeviceProperties");
+    }
+}
+
+// =============================================================================
+// ENGINES ZYGISK: PENYARINGAN APLIKASI
+// =============================================================================
 class MyModule : public zygisk::ModuleBase {
 public:
-    void onLoad(Api *api, JNIEnv *env) override {
-        this->api = api;
-        this->env = env;
+    void onLoad(zygisk::Api *api, JNIEnv *env) override {
+        this->api_peta = api;
+        this->env_peta = env;
     }
 
-    void preAppSpecialize(AppSpecializeArgs *args) override {
-        // Use JNI to fetch our process name
-        const char *process = env->GetStringUTFChars(args->nice_name, nullptr);
-        preSpecialize(process);
-        env->ReleaseStringUTFChars(args->nice_name, process);
-    }
+    void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
+        const char *process_name = env_peta->GetStringUTFChars(args->nice_name, nullptr);
 
-    void preServerSpecialize(ServerSpecializeArgs *args) override {
-        preSpecialize("system_server");
+        if (!process_name) return;
+
+        // DAFTAR HITAM: Hindari aplikasi sistem agar tidak crash
+        if (strstr(process_name, "com.android.systemui") || 
+            strstr(process_name, "com.google.android") || 
+            strstr(process_name, "ksu.manager") || 
+            strstr(process_name, "android.process")) {
+            
+            api_peta->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            env_peta->ReleaseStringUTFChars(args->nice_name, process_name);
+            return; 
+        }
+
+        aktifkan_spoofing_driver();
+
+        env_peta->ReleaseStringUTFChars(args->nice_name, process_name);
     }
 
 private:
-    Api *api;
-    JNIEnv *env;
-
-    void preSpecialize(const char *process) {
-        // Demonstrate connecting to to companion process
-        // We ask the companion for a random number
-        unsigned r = 0;
-        int fd = api->connectCompanion();
-        read(fd, &r, sizeof(r));
-        close(fd);
-        LOGD("process=[%s], r=[%u]\n", process, r);
-
-        // Since we do not hook any functions, we should let Zygisk dlclose ourselves
-        api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
-    }
-
+    zygisk::Api *api_peta;
+    JNIEnv *env_peta;
 };
 
-static int urandom = -1;
-
-static void companion_handler(int i) {
-    if (urandom < 0) {
-        urandom = open("/dev/urandom", O_RDONLY);
-    }
-    unsigned r;
-    read(urandom, &r, sizeof(r));
-    LOGD("companion r=[%u]\n", r);
-    write(i, &r, sizeof(r));
-}
-
-// Register our module class and the companion handler function
 REGISTER_ZYGISK_MODULE(MyModule)
-REGISTER_ZYGISK_COMPANION(companion_handler)
